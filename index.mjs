@@ -11,7 +11,7 @@ import './stackcore.js';
 
 const T = globalThis.ThreatlineStack;
 const env = process.env;
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const DEFAULT_API = 'https://threatline.ai';
 // The canister's own address, used when the default domain cannot be reached.
 const FALLBACK_API = 'https://7zcj6-hqaaa-aaaao-bbqzq-cai.icp0.io';
@@ -223,6 +223,8 @@ function markdown() {
   }
   const rest = findings.filter(f => !shown.includes(f));
   if (rest.length) out.push(`<details><summary>${rest.length} more below the fail level or ignored</summary>`, '', '| | Package | Issue | Evidence | Action |', '|---|---|---|---|---|', ...rest.slice(0, 80).map(row), '', '</details>', '');
+  const cmds = [...new Map(findings.filter(f => !f.ignored && !f.malicious && f.eco !== 'image' && f.target).map(f => [`${f.eco}|${f.name}`, T.upgradeCommand(f.eco, f.name, f.target)])).values()].filter(Boolean);
+  if (cmds.length) out.push('<details><summary>Upgrade commands</summary>', '', '```sh', ...cmds.slice(0, 40), '```', '', '</details>', '');
   if (unpinned.length) out.push(`Not checked: ${unpinned.map(u => `\`${u.image}\``).join(', ')} use floating tags. Pin a full version (for example \`php:8.3.36\`) to check them.`, '');
   if (expired.length) out.push(`Expired ignores, no longer applied: ${expired.map(x => `${x.id} (until ${x.until})`).join(', ')}.`, '');
   out.push(`<sub>Checked ${uniq.size} package versions in ${files.filter(f => f.kind === 'lock').length} files and ${images.length} images against [Threatline](${site}) data from ${fmtDay(catalog.generated_at)} ${String(catalog.generated_at || '').slice(11, 16)} UTC. Fails on ${RULE[opts.failOn]}${opts.failWithoutFix ? ', with or without a fix' : ' that have a fix'}. Your dependency list never left this runner.</sub>`);

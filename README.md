@@ -59,6 +59,24 @@ Outputs: `failed`, `findings`, `exploited`, `malicious`, `report`.
 
 `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements*.txt`, `constraints*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `Gemfile.lock`, `go.mod`, `Cargo.lock`, `composer.lock`, CycloneDX and SPDX JSON, and `Dockerfile` / compose files for official images (php, node, python, nginx, postgres, redis, gitlab and others). Image tags must name a full version, such as `php:8.3.36`; floating tags like `php:8.3` are listed as not checked.
 
+## GitLab CI and other CI systems
+
+The check is one Node file with no dependencies, so it runs anywhere Node 18 or later does. The exit code fails the pipeline.
+
+```yaml
+# .gitlab-ci.yml
+threatline:
+  image: node:22
+  script:
+    - git clone --depth 1 --branch v1 https://github.com/JoshDFN/threatline-check /tmp/threatline
+    - node /tmp/threatline/index.mjs . --fail-on exploited --report-file threatline.md
+  artifacts:
+    when: always
+    paths: [threatline.md]
+```
+
+Add a scheduled pipeline to catch dependencies that become exploited after they were merged.
+
 ## From a shell
 
 ```sh

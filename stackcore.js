@@ -41,9 +41,17 @@
     return { hit: false };
   }
   // A CVE record's affected_ranges entry (CVE List or GitHub style). Returns the fixed version, 'a later release', or null.
+  // ">= 8.3.0, < 8.3.8" (GitHub style, also found in CVE List version fields). Returns the fix, 'a later release', or null.
+  function rangeStrHit(ver, str) {
+    const ok = String(str).split(',').every(c => { const m = /^\s*(>=|<=|>|<|=)\s*(\S+)/.exec(c); if (!m) return false; const k = vcmp(ver, m[2]); return { '>=': k >= 0, '<=': k <= 0, '>': k > 0, '<': k < 0, '=': k === 0 }[m[1]]; });
+    if (!ok) return null;
+    const m = /<\s*([^\s,]+)/.exec(str);
+    return m && !/<=/.test(str) ? m[1] : 'a later release';
+  }
   function cveRangeHit(ver, entry) {
     for (const v of entry.versions || []) {
       if (typeof v !== 'object' || v.status !== 'affected') continue;
+      if (/^\s*[<>=]/.test(String(v.version || ''))) { const hit = rangeStrHit(ver, v.version); if (hit) return hit; continue; }
       const lo = String(v.version || '0'), star = lo.includes('*') ? lo.replace(/\.?\*.*$/, '') : null;
       if (star && !(ver === star || ver.startsWith(star + '.'))) continue;
       if (!star && lo !== '0' && vcmp(ver, lo) < 0) continue;
@@ -51,12 +59,49 @@
       if (v.lessThanOrEqual && v.lessThanOrEqual !== '*') { if (vcmp(ver, v.lessThanOrEqual) <= 0) return 'a later release'; continue; }
       if (!v.lessThan && !v.lessThanOrEqual && !star && lo === ver) return 'a later release';
     }
-    if (entry.range) {  // GitHub style: ">= 8.3.0, < 8.3.8"
-      const ok = entry.range.split(',').every(c => { const m = /^\s*(>=|<=|>|<|=)\s*(\S+)/.exec(c); if (!m) return false; const k = vcmp(ver, m[2]); return { '>=': k >= 0, '<=': k <= 0, '>': k > 0, '<': k < 0, '=': k === 0 }[m[1]]; });
-      if (ok) { const m = /<\s*(\S+)/.exec(entry.range); return m ? m[1] : 'a later release'; }
+    if (entry.range) return rangeStrHit(ver, entry.range);  // GitHub style: ">= 8.3.0, < 8.3.8"
+    if ((entry.ranges || []).length) {  // OSV events: introduced / fixed / last_affected
+      for (const r of entry.ranges) {
+        if (r.type === 'GIT') continue;
+        let start = null;
+        for (const e of r.events || []) {
+          if ('introduced' in e) start = e.introduced;
+          else if ('fixed' in e) { if (vcmp(ver, start || '0') >= 0 && vcmp(ver, e.fixed) < 0) return e.fixed; start = null; }
+          else if ('last_affected' in e) { if (vcmp(ver, start || '0') >= 0 && vcmp(ver, e.last_affected) <= 0) return 'a later release'; start = null; }
+        }
+        if (start !== null && vcmp(ver, start) >= 0) return 'a later release';
+      }
     }
     return null;
   }
+  // Whether an entry carries anything we can evaluate.
+  const evaluable = e => (e.versions || []).some(v => typeof v === 'object' && v.status === 'affected') || !!e.range || (e.ranges || []).some(r => r.type !== 'GIT');
+  // "Am I affected?" for one record: per product, affected (with the fix) or not, or null when nothing can be evaluated.
+  function recordHit(rec, version, product) {
+    const ver = String(version || '').trim().replace(/^v(?=\d)/i, '');
+    if (!ver) return null;
+    const entries = (rec.affected_ranges || []).filter(evaluable).filter(e => !product || String(e.product || e.package?.name || '').toLowerCase() === product.toLowerCase());
+    if (!entries.length) return null;
+    for (const e of entries) { const fix = cveRangeHit(ver, e); if (fix) return { affected: true, fix: fix === 'a later release' ? null : fix, source: e.source || null }; }
+    // Not in any listed range. CVE records often list only the release lines that got a fix, so a version older than
+    // every listed range (an end-of-life line) is not evidence of safety. Only "newer than every fix" is reassuring.
+    const lows = [], highs = [];
+    for (const e of entries) for (const v of e.versions || []) {
+      if (typeof v !== 'object' || v.status !== 'affected') continue;
+      const raw = String(v.version || '');
+      const lo = /^\s*[<>=]/.test(raw) ? (/>=?\s*([^\s,]+)/.exec(raw) || [])[1] : raw.replace(/\.?\*.*$/, '');
+      const hi = v.lessThan || v.lessThanOrEqual || (/<=?\s*([^\s,]+)/.exec(raw) || [])[1];
+      if (lo && lo !== '0') lows.push(lo);
+      if (hi && hi !== '*') highs.push(hi);
+    }
+    if (highs.length && highs.every(h => vcmp(ver, h) >= 0)) return { affected: false, status: 'newer' };
+    // At or past the fix on its own release line (8.3.36 for the 8.3 line).
+    const line = v => String(v).replace(/^v/i, '').split(/[.-]/).slice(0, 2).join('.');
+    if (highs.some(h => line(h) === line(ver) && vcmp(ver, h) >= 0)) return { affected: false, status: 'fixed' };
+    if (lows.length && lows.every(l => vcmp(ver, l) < 0 && !ver.startsWith(l + '.'))) return { affected: false, status: 'older' };
+    return { affected: false, status: entries.some(e => (e.ranges || []).length || e.range) ? 'outside' : 'unlisted' };
+  }
+  const recordProducts = rec => [...new Set((rec.affected_ranges || []).filter(evaluable).map(e => e.product || e.package?.name).filter(Boolean))];
 
   // ---- lockfiles and SBOMs: each returns [{eco, name, version}]
   const clean = v => String(v || '').trim().replace(/^[=v]+(?=\d)/, '').replace(/^==/, '');
@@ -206,5 +251,46 @@
     return null;
   }
 
-  root.ThreatlineStack = { ECO, PURL_ECO, vcmp, inRanges, fixFor, cveRangeHit, parseLock, parseManual, parseImages, LOCKFILE_RE, IMAGE_RE, matchPackages, runtimeCandidates, runtimeHit };
+  // ---- the command that moves a package to a fixed version, per ecosystem
+  const ECO_KEY = { npm: 'npm', pypi: 'pypi', PyPI: 'pypi', go: 'go', Go: 'go', cargo: 'cargo', 'crates.io': 'cargo', gem: 'gem', RubyGems: 'gem', composer: 'composer', Packagist: 'composer', maven: 'maven', Maven: 'maven', nuget: 'nuget', NuGet: 'nuget' };
+  function upgradeCommand(eco, name, version) {
+    const k = ECO_KEY[eco], v = String(version || '').trim();
+    if (!k || !name || !v || /\s/.test(name + v)) return null;
+    switch (k) {
+      case 'npm': return `npm install ${name}@${v}`;
+      case 'pypi': return `pip install "${name}>=${v}"`;
+      case 'go': return `go get ${name}@${v.startsWith('v') ? v : 'v' + v}`;
+      case 'cargo': return `cargo update -p ${name} --precise ${v}`;
+      case 'gem': return `bundle update ${name} --conservative  # needs ${v} or later`;
+      case 'composer': return `composer require "${name}:^${v}"`;
+      case 'nuget': return `dotnet add package ${name} --version ${v}`;
+      case 'maven': { const [g, a] = name.split(':'); return a ? `<dependency><groupId>${g}</groupId><artifactId>${a}</artifactId><version>${v}</version></dependency>` : null; }
+    }
+    return null;
+  }
+
+  // ---- a record's timeline: when it was published, first reported, first reported exploited, when exploit code
+  // and WAF rules appeared, and when CISA listed it. rec is a full record, sig its signal entry, first its first
+  // sightings (signals.json "firsts"). Each event names its source.
+  function timeline(rec, sig, first) {
+    const ev = [], add = (at, kind, label, source, url) => { if (at && Number.isFinite(Date.parse(at))) ev.push({ at, kind, label, source, url }); };
+    const cveUrl = `https://www.cve.org/CVERecord?id=${encodeURIComponent(rec.id)}`;
+    add(rec.published_at, 'published', 'Published', /^CVE-/.test(rec.id) ? 'CVE List' : 'Advisory', /^CVE-/.test(rec.id) ? cveUrl : null);
+    // "First report" only adds something when it came before the exploit code and exploitation reports.
+    const later = [first?.poc?.at, first?.exploited?.at].filter(Boolean);
+    if (first?.report && first.report.at > (rec.published_at || '') && later.every(t => first.report.at < t)) add(first.report.at, 'report', 'First report', first.report.source, first.report.url);
+    const xs = (rec.exploits || []).filter(x => x.date).sort((a, b) => String(a.date).localeCompare(String(b.date)))[0];
+    const poc = [first?.poc, xs && { at: xs.date, source: xs.source, url: xs.url }].filter(Boolean).sort((a, b) => String(a.at).localeCompare(String(b.at)))[0];
+    if (poc) add(poc.at, 'poc', 'Exploit code public', poc.source, poc.url);
+    if (first?.exploited) add(first.exploited.at, 'exploited', 'First reported exploited', first.exploited.source, first.exploited.url);
+    const waf = (sig?.mitigations || []).slice().sort((a, b) => String(a.published).localeCompare(String(b.published)))[0];
+    if (waf) add(waf.published, 'waf', 'WAF rule available', waf.source, waf.url);
+    if (rec.kev?.date_added) add(rec.kev.date_added, 'kev', 'Added to CISA KEV', 'CISA KEV', 'https://www.cisa.gov/known-exploited-vulnerabilities-catalog');
+    // Date-only events (CISA lists by day) sort at midday UTC among the timed ones.
+    const t = v => Date.parse(String(v).length <= 10 ? `${v}T12:00:00Z` : v);
+    ev.sort((a, b) => t(a.at) - t(b.at));
+    return { events: ev, awaitingKev: !!first?.exploited && !rec.kev?.listed };
+  }
+
+  root.ThreatlineStack = { ECO, PURL_ECO, ECO_KEY, upgradeCommand, timeline, recordHit, recordProducts, vcmp, inRanges, fixFor, cveRangeHit, parseLock, parseManual, parseImages, LOCKFILE_RE, IMAGE_RE, matchPackages, runtimeCandidates, runtimeHit };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
