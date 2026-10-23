@@ -1,0 +1,10 @@
+{
+  "name": "threatline-check",
+  "version": "1.0.0",
+  "description": "Fail pull requests that add malicious, known exploited or critical dependencies. Checks lockfiles, SBOMs and Dockerfiles against Threatline.",
+  "type": "module",
+  "bin": { "threatline-check": "index.mjs" },
+  "files": ["index.mjs", "stackcore.js", "action.yml", "README.md"],
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

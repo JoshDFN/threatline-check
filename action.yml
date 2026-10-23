@@ -1,0 +1,57 @@
+name: Threatline check
+description: Fail pull requests that add malicious, known exploited or critical dependencies. Checks lockfiles, SBOMs and Dockerfiles; your dependency list never leaves the runner.
+author: Threatline
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  path:
+    description: Directory to scan (lockfiles, SBOMs, Dockerfiles and compose files, recursively).
+    default: '.'
+  fail-on:
+    description: 'What fails the check: malicious, exploited (malicious or known exploited), critical, high, any, or none (report only).'
+    default: exploited
+  fail-without-fix:
+    description: Also fail on issues that have no fixed version yet. By default those are reported as warnings.
+    default: 'false'
+  ignore:
+    description: IDs to accept (CVE, GHSA, OSV or supply chain IDs), separated by commas or new lines.
+    default: ''
+  ignore-file:
+    description: 'File of accepted IDs, one per line: "CVE-2026-1234 until 2026-12-31 # reason". Expired lines stop applying.'
+    default: .threatline-ignore
+  comment:
+    description: Post the result as one pull request comment, updated on every run. Needs "pull-requests write" permission.
+    default: 'true'
+  github-token:
+    description: Token used for the pull request comment.
+    default: ${{ github.token }}
+  sarif-file:
+    description: Also write a SARIF file here, for github/codeql-action/upload-sarif and the Security tab.
+    default: ''
+  report-file:
+    description: Also write the Markdown report here.
+    default: ''
+  on-api-error:
+    description: 'If Threatline cannot be reached: warn (pass with a warning) or fail.'
+    default: warn
+  api:
+    description: Threatline site to read data from.
+    default: https://threatline.ai
+
+outputs:
+  failed:
+    description: '"true" when something matched the fail-on rule.'
+  findings:
+    description: Number of issues found, blocking or not.
+  exploited:
+    description: Number of known exploited issues.
+  malicious:
+    description: Number of malicious releases.
+  report:
+    description: Path of the Markdown report, when report-file is set.
+
+runs:
+  using: node24
+  main: index.mjs

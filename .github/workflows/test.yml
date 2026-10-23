@@ -1,0 +1,61 @@
+# Runs this action on a throwaway repository with known problems, against the live Threatline data.
+name: Self-test
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Written at run time so the repository itself never holds these versions.
+      - name: Make a repository with known problems
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture/web"
+          cd "$RUNNER_TEMP/fixture"
+          printf 'litellm==1.107.0\npillow==12.3.0\nrequests==2.32.0\n' > requirements.txt
+          printf 'FROM php:8.3.30-apache\nFROM nginx:1.27\n' > Dockerfile
+          printf '{"lockfileVersion":3,"packages":{"":{"name":"web"},"node_modules/lodash":{"version":"4.17.20"}}}\n' > web/package-lock.json
+
+      - id: tl
+        uses: ./
+        with:
+          path: ${{ runner.temp }}/fixture
+          fail-on: none
+          comment: 'false'
+          sarif-file: ${{ runner.temp }}/threatline.sarif
+          report-file: ${{ runner.temp }}/threatline.md
+          api: https://7zcj6-hqaaa-aaaao-bbqzq-cai.icp0.io
+
+      - name: Expect the malicious release, an exploited PHP image and Pillow issues
+        env:
+          FINDINGS: ${{ steps.tl.outputs.findings }}
+          MALICIOUS: ${{ steps.tl.outputs.malicious }}
+          EXPLOITED: ${{ steps.tl.outputs.exploited }}
+        run: |
+          echo "::notice title=Action self-test::findings=$FINDINGS malicious=$MALICIOUS exploited=$EXPLOITED"
+          test "$MALICIOUS" -ge 1
+          test "$EXPLOITED" -ge 1
+          test "$FINDINGS" -ge 5
+          test -s "$RUNNER_TEMP/threatline.sarif"
+          grep -q 'litellm 1.107.0' "$RUNNER_TEMP/threatline.md"
+
+      - name: The default rule fails on the same repository
+        id: strict
+        continue-on-error: true
+        uses: ./
+        with:
+          path: ${{ runner.temp }}/fixture
+          comment: 'false'
+          api: https://7zcj6-hqaaa-aaaao-bbqzq-cai.icp0.io
+
+      - name: Check that it failed
+        run: test "${{ steps.strict.outcome }}" = failure
